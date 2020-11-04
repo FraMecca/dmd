@@ -626,6 +626,9 @@ private int tryMain(size_t argc, const(char)** argv, ref Param params)
             printf("%.*s", cast(int)data.length, data.ptr);
     }
 
+    import dmd.mecca: buildDepGraph;
+    buildDepGraph(modules);
+
     printCtfePerformanceStats();
     printTemplateStats();
 
