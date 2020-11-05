@@ -80,7 +80,9 @@ begin ='''
             .attr("dx", function(d) { return d.children ? -8 : 8; })
             .attr("dy", function(d) { return d.children ? -7 : 3; })
             .attr("text-anchor", function(d) { return d.children ? "end" : "start"; })
-            .text(function(d) { return d.name; });
+            .text(function(d) { return d.name; })
+            .on("click",function(d,i) { window.open("/"+d.name);});
+            ;
     }
 
     function display(module) {

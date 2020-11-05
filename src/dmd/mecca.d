@@ -2,6 +2,8 @@ module dmd.mecca;
 
 import core.stdc.stdio;
 import std.algorithm.iteration: map, each, filter;
+import std.array: array;
+import std.json;
 
 import dmd.visitor;
 import dmd.dmodule;
@@ -95,7 +97,16 @@ auto write(Module _mod, ModuleDepGraph.Node[] nodes){
             this.parent = parent;
             this.children = [];
         }
-
+        JSONValue toJson(){
+            import std.string: fromStringz;
+            import std.json;
+            // auto j = JSONValue.object();
+            auto j = JSONValue();
+            j["name"] = JSONValue(name.fromStringz);
+            j["parent"] = JSONValue(parent.fromStringz);
+            j.object["children"] = children.map!(c => c.toJson()).array;
+            return j;
+        }
     }
 
     auto mod = _mod.toPrettyChars();
@@ -115,29 +126,15 @@ auto write(Module _mod, ModuleDepGraph.Node[] nodes){
         mem[n.root] = root; // key: TemplateInstance, value: root tree
     }
 
-    import std.array: array;
-    const roots = mem.values.filter!(tree => tree.parent == mod).array;
+    auto roots = mem.values.filter!(tree => tree.parent == mod).array;
 
     char[64] fname = ""; strcat(fname.ptr, mod); strcat(fname.ptr, ".templates");
+    auto root = new Tree(mod, null);
+    root.children = roots;
+    import std.string: toStringz;
     auto fp = fopen(fname.ptr, "w");
-    fprintf(fp, `{"name":"%s", "parent":null, "children":[`, mod);
-
-    void writeJsonString(const(Tree) tree){
-        fprintf(fp, `{"name":"%s", "parent":"%s", "children":[`, tree.name, tree.parent);
-        if(tree.children.length) foreach(child; tree.children[0..$-1]){
-            writeJsonString(child);
-            fprintf(fp, ",");
-        }
-        if(tree.children.length > 1) writeJsonString(tree.children[$-1]); // avoid final comma
-        fprintf(fp, `]}`);
-    }
-
-    if(roots.length) foreach(r; roots[0..$-1]){
-        writeJsonString(r);
-        fprintf(fp, `,`);
-    }
-    if(roots.length > 0) writeJsonString(roots[$-1]);
-    fprintf(fp, `]}`);
+    fprintf(fp, "%s", root.toJson().toString.toStringz);
+    fclose(fp);
 }
 
 void buildDepGraph(ref Modules modules) {
