@@ -5759,6 +5759,7 @@ extern (C++) final class TemplateTupleParameter : TemplateParameter
  */
 extern (C++) class TemplateInstance : ScopeDsymbol
 {
+    import dmd.mecca:Watch;
     Identifier name;
 
     // Array of Types/Expressions of template
@@ -5789,7 +5790,7 @@ extern (C++) class TemplateInstance : ScopeDsymbol
     // Note that these are inaccurate until semantic analysis phase completed.
     TemplateInstance tinst;     // enclosing template instance
     TemplateInstance tnext;     // non-first instantiated instances
-    Module minst;               // the top module that instantiated this instance
+    mixin(Watch("Module", "minst"));              // the top module that instantiated this instance
 
     private ushort _nest;       // for recursive pretty printing detection, 3 MSBs reserved for flags (below)
     ubyte inuse;                // for recursive expansion detection
