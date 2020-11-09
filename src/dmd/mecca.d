@@ -3,7 +3,11 @@ module dmd.mecca;
 import core.stdc.stdio: printf, fopen, fprintf, fclose;
 import std.algorithm.iteration: map, each, filter;
 import std.array: array;
+import std.string: toStringz;
+import core.stdc.string;
 import std.json;
+
+import std.stdio: writeln;
 
 import dmd.visitor;
 import dmd.dmodule;
@@ -15,7 +19,10 @@ import dmd.dsymbol;
 auto Watch(string Type, string Param)
 {
     const string decl = Type ~ " _"~Param ~ ";";
-    const string getter = "@property auto " ~ Param ~ "(){ import dmd.mecca:printPrettyTrace; import std.stdio: stderr; printPrettyTrace(stderr); return " ~"_"~Param ~"; }";
+    const string getter = "@property auto " ~ Param ~ `(){ 
+    import dmd.mecca:getBacktrace;
+    this.tracing.bt ~= getBacktrace();
+    return ` ~"_"~Param ~";}";
     const string setter = "@property nothrow void " ~ Param ~ "(" ~ Type ~ " x){ " ~ "_"~Param ~ "= x; }";
     return decl ~ setter ~ getter;
 }
@@ -93,7 +100,6 @@ extern(C++) class TempGraphVisitor: SemanticTimeTransitiveVisitor
 }
 
 auto write(Module _mod, ModuleDepGraph.Node[] nodes){
-    import core.stdc.string;
 
     class Tree{
         const(char)* name;
@@ -121,6 +127,7 @@ auto write(Module _mod, ModuleDepGraph.Node[] nodes){
 
     Tree[TemplateInstance] mem; // memorize visited nodes
     foreach(n; nodes){
+        write_traces(n.root);
         auto name = n.root.toPrettyChars();
         Tree root = new Tree(name, mod);
         foreach(c; n.children){
@@ -139,7 +146,6 @@ auto write(Module _mod, ModuleDepGraph.Node[] nodes){
     char[64] fname = ""; strcat(fname.ptr, mod); strcat(fname.ptr, ".templates");
     auto root = new Tree(mod, null);
     root.children = roots;
-    import std.string: toStringz;
     auto fp = fopen(fname.ptr, "w");
     fprintf(fp, "%s", root.toJson().toString.toStringz);
     fclose(fp);
@@ -169,39 +175,24 @@ import std.stdio;
 import core.sys.linux.execinfo;
 
 private enum maxBacktraceSize = 32;
-private alias TraceHandler = Throwable.TraceInfo function(void* ptr);
-
 extern (C) void* thread_stackBottom();
 
-struct Trace {
-  string file;
-  uint line;
+struct Trace{
+    size_t[maxBacktraceSize] u;
+    alias u this;
 }
 
-struct Symbol {
-  string line;
-
-  string demangled() const {
-    import std.demangle;
-    import std.algorithm, std.range;
-    import std.conv : to;
-    dchar[] symbolWith0x = line.retro().find(")").dropOne().until("(").array().retro().array();
-    if (symbolWith0x.length == 0) return "";
-    else return demangle(symbolWith0x.until("+").to!string());
-  }
-}
-
-struct PrintOptions {
-  uint detailedForN = 2;
-  bool colored = false;
-  uint numberOfLinesBefore = 3;
-  uint numberOfLinesAfter = 3;
-  bool stopAtDMain = true;
+Trace getBacktrace() {
+    auto bt = getBacktraceImpl();
+    Trace t;
+    foreach(const i, const b; bt){
+        t[i] = cast(size_t) b;
+    }
+    return t;
 }
 
 version(DigitalMars) {
-
-  void*[] getBacktrace() {
+  void*[] getBacktraceImpl() {
     enum CALL_INST_LENGTH = 1; // I don't know the size of the call instruction
                                // and whether it is always 5. I picked 1 instead
                                // because it is enough to get the backtrace
@@ -232,220 +223,31 @@ version(DigitalMars) {
 
     return buffer[0 .. traceSize].dup;
   }
-
 } else {
-
-  void*[] getBacktrace() {
+  void*[] getBacktraceImpl() {
     void*[maxBacktraceSize] buffer;
     auto size = backtrace(buffer.ptr, buffer.length);
     return buffer[0 .. size].dup;
   }
-
 }
 
-Symbol[] getBacktraceSymbols(const(void*[]) backtrace) {
-  import core.stdc.stdlib : free;
-  import std.conv : to;
 
-  Symbol[] symbols = new Symbol[backtrace.length];
-  char** c_symbols = backtrace_symbols(backtrace.ptr, cast(int) backtrace.length);
-  foreach (i; 0 .. backtrace.length) {
-    symbols[i] = Symbol(c_symbols[i].to!string());
-  }
-  free(c_symbols);
+auto write_traces(TemplateInstance ti){
+    import std.array: appender;
+    import std.format: formattedWrite;
 
-  return symbols;
-}
-
-Trace[] getLineTrace(const(void*[]) backtrace) {
-  import std.conv : to;
-  import std.string : chomp;
-  import std.algorithm, std.range;
-  import std.process;
-
-  auto addr2line = pipeProcess(["addr2line", "-e" ~ exePath()], Redirect.stdin | Redirect.stdout);
-  scope(exit) addr2line.pid.wait();
-
-  Trace[] trace = new Trace[backtrace.length];
-
-  foreach (i, bt; backtrace) {
-    addr2line.stdin.writefln("0x%X", bt);
-    addr2line.stdin.flush();
-    dstring reply = addr2line.stdout.readln!dstring().chomp();
-    with (trace[i]) {
-      auto split = reply.retro().findSplit(":");
-      if (split[0].equal("?")) line = 0;
-      else line = split[0].retro().to!uint;
-      file = split[2].retro().to!string;
-    }
-  }
-
-  executeShell("kill -INT " ~ addr2line.pid.processID.to!string);
-  return trace;
-}
-
-private string exePath() {
-  import std.file : readLink;
-  import std.path : absolutePath;
-  string link = readLink("/proc/self/exe");
-  string path = absolutePath(link, "/proc/self/");
-  return path;
-}
-
-void printPrettyTrace(PrintOptions options = PrintOptions.init, uint framesToSkip = 2) {
-  printPrettyTrace(stdout, options, framesToSkip);
-}
-
-void printPrettyTrace(File output, PrintOptions options = PrintOptions.init, uint framesToSkip = 1) {
-  void*[] bt = getBacktrace();
-  output.write(getPrettyTrace(bt, options, framesToSkip));
-}
-
-string prettyTrace(PrintOptions options = PrintOptions.init, uint framesToSkip = 1) {
-  void*[] bt = getBacktrace();
-  return getPrettyTrace(bt, options, framesToSkip);
-}
-
-private string getPrettyTrace(const(void*[]) bt, PrintOptions options = PrintOptions.init, uint framesToSkip = 1) {
-  import std.algorithm : max;
-  import std.range;
-  import std.format;
-
-  Symbol[] symbols = getBacktraceSymbols(bt);
-  Trace[] trace = getLineTrace(bt);
-
-  enum Color : char {
-    black = '0',
-    red,
-    green,
-    yellow,
-    blue,
-    magenta,
-    cyan,
-    white
-  }
-
-  string forecolor(Color color) {
-    if (!options.colored) return "";
-    else return "\u001B[3" ~ color ~ "m";
-  }
-
-  string backcolor(Color color) {
-    if (!options.colored) return "";
-    else return "\u001B[4" ~ color ~ "m";
-  }
-
-  string reset() {
-    if (!options.colored) return "";
-    else return "\u001B[0m";
-  }
-
-  auto output = appender!string();
-
-  output.put("Stack trace:\n");
-
-  foreach(i, t; trace.drop(framesToSkip)) {
-    auto symbol = symbols[framesToSkip + i].demangled;
-
-    formattedWrite(
-      output,
-      "#%d: %s%s%s line %s(%s)%s%s%s%s%s @ %s0x%s%s\n",
-      i + 1,
-      forecolor(Color.red),
-      t.file,
-      reset(),
-      forecolor(Color.yellow),
-      t.line,
-      reset(),
-      symbol.length == 0 ? "" : " in ",
-      forecolor(Color.green),
-      symbol,
-      reset(),
-      forecolor(Color.green),
-      bt[i + 1],
-      reset()
-    );
-
-    if (i < options.detailedForN) {
-      uint startingLine = max(t.line - options.numberOfLinesBefore - 1, 0);
-      uint endingLine = t.line + options.numberOfLinesAfter;
-
-      if (t.file == "??") continue;
-
-      File code;
-      try {
-        code = File(t.file, "r");
-      } catch (Exception ex) {
-        continue;
-      }
-
-      auto lines = code.byLine();
-
-      lines.drop(startingLine);
-      auto lineNumber = startingLine + 1;
-      output.put("\n");
-      foreach (line; lines.take(endingLine - startingLine)) {
-        formattedWrite(
-          output,
-          "%s%s(%d)%s%s%s\n",
-          forecolor(t.line == lineNumber ? Color.yellow : Color.cyan),
-          t.line == lineNumber ? ">" : " ",
-          lineNumber,
-          forecolor(t.line == lineNumber ? Color.yellow : Color.blue),
-          line,
-          reset(),
-        );
-        lineNumber++;
-      }
-      output.put("\n");
+    auto writer = appender!string();
+    enum fmt = "%ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul %ul\n";
+    foreach(bt; ti.tracing.bt){
+        size_t[32] t = bt.u;
+        writer.formattedWrite!fmt(t[0], t[1], t[2], t[2], t[4], t[5], t[6], t[7],
+                                  t[8], t[9], t[10], t[11], t[12], t[13], t[14], t[15],
+                                  t[16], t[17], t[18], t[19], t[20], t[21], t[22], t[23],
+                                  t[24], t[25], t[26], t[27], t[28], t[29], t[30], t[31]);
     }
 
-    if (options.stopAtDMain && symbol == "_Dmain") break;
-  }
-  return output.data;
-}
-
-private class BTTraceHandler : Throwable.TraceInfo {
-  import std.algorithm;
-
-  void*[] backtrace;
-  PrintOptions options;
-  uint framesToSkip;
-
-  this(PrintOptions options, uint framesToSkip) {
-    this.options = options;
-    this.framesToSkip = framesToSkip;
-    backtrace = getBacktrace();
-  }
-
-  override int opApply(scope int delegate(ref const(char[])) dg) const {
-    return opApply((ref size_t i, ref const(char[]) s) {
-        return dg(s);
-    });
-  }
-
-  override int opApply(scope int delegate(ref size_t, ref const(char[])) dg) const {
-    int result = 0;
-    auto prettyTrace = getPrettyTrace(backtrace, options, framesToSkip);
-    auto bylines = prettyTrace.splitter("\n");
-    size_t i = 0;
-    foreach (l; bylines) {
-      result = dg(i, l);
-      if (result)
-        break;
-      ++i;
-    }
-    return result;
-  }
-
-  override string toString() const {
-    return getPrettyTrace(backtrace, options, framesToSkip);
-  }
-}
-
-private static PrintOptions runtimePrintOptions;
-private static uint runtimeFramesToSkip;
-
-private Throwable.TraceInfo btTraceHandler(void* ptr) {
-  return new BTTraceHandler(runtimePrintOptions, runtimeFramesToSkip);
+    char[64] fname = ""; strcat(fname.ptr, ti.toPrettyChars); strcat(fname.ptr, ".trace");
+    auto fp = fopen(ti.toPrettyChars, "w");
+    fprintf(fp, "%s", writer.data.toStringz);
+    fclose(fp);
 }

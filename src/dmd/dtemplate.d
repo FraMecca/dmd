@@ -5759,7 +5759,13 @@ extern (C++) final class TemplateTupleParameter : TemplateParameter
  */
 extern (C++) class TemplateInstance : ScopeDsymbol
 {
-    import dmd.mecca:Watch;
+    import dmd.mecca:Watch, Trace;
+    struct Tracing{
+        Trace[] bt;
+    }
+
+    Tracing tracing;
+    
     Identifier name;
 
     // Array of Types/Expressions of template
@@ -5840,6 +5846,7 @@ extern (C++) class TemplateInstance : ScopeDsymbol
         }
         this.name = ident;
         this.tiargs = tiargs;
+        this.tracing = Tracing();
     }
 
     /*****************
